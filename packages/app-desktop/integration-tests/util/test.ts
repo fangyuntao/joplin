@@ -4,6 +4,7 @@ import { _electron as electron, Page, ElectronApplication, test as base } from '
 import uuid from '@joplin/lib/uuid';
 import createStartupArgs from './createStartupArgs';
 import firstNonDevToolsWindow from './firstNonDevToolsWindow';
+import setDarkMode from './setDarkMode';
 
 
 type StartWithPluginsResult = { app: ElectronApplication; mainWindow: Page };
@@ -31,6 +32,22 @@ const getAndResizeMainWindow = async (electronApp: ElectronApplication) => {
 	return mainWindow;
 };
 
+const waitForMainMessage = (electronApp: ElectronApplication, messageId: string) => {
+	return electronApp.evaluate(({ ipcMain }, messageId) => {
+		return new Promise<void>(resolve => {
+			ipcMain.once(messageId, () => resolve());
+		});
+	}, messageId);
+};
+
+const waitForAppLoaded = async (electronApp: ElectronApplication) => {
+	await waitForMainMessage(electronApp, 'startup-finished');
+};
+
+const waitForStartupPlugins = async (electronApp: ElectronApplication) => {
+	await waitForMainMessage(electronApp, 'startup-plugins-loaded');
+};
+
 const testDir = dirname(__dirname);
 
 export const test = base.extend<JoplinFixtures>({
@@ -53,6 +70,9 @@ export const test = base.extend<JoplinFixtures>({
 	electronApp: async ({ profileDirectory }, use) => {
 		const startupArgs = createStartupArgs(profileDirectory);
 		const electronApp = await electron.launch({ args: startupArgs });
+		const startupPromise = waitForAppLoaded(electronApp);
+		await setDarkMode(electronApp, false);
+		await startupPromise;
 
 		await use(electronApp);
 
@@ -75,10 +95,14 @@ export const test = base.extend<JoplinFixtures>({
 					pluginPaths.map(path => resolve(testDir, path)).join(','),
 				],
 			});
+			const startupPromise = waitForAppLoaded(electronApp);
+			const mainWindowPromise = getAndResizeMainWindow(electronApp);
+			await waitForStartupPlugins(electronApp);
+			await startupPromise;
 
 			return {
 				app: electronApp,
-				mainWindow: await getAndResizeMainWindow(electronApp),
+				mainWindow: await mainWindowPromise,
 			};
 		});
 
@@ -89,13 +113,7 @@ export const test = base.extend<JoplinFixtures>({
 	},
 
 	startupPluginsLoaded: async ({ electronApp }, use) => {
-		const startupPluginsLoadedPromise = electronApp.evaluate(({ ipcMain }) => {
-			return new Promise<void>(resolve => {
-				ipcMain.once('startup-plugins-loaded', () => resolve());
-			});
-		});
-
-		await use(startupPluginsLoadedPromise);
+		await use(waitForStartupPlugins(electronApp));
 	},
 
 	mainWindow: async ({ electronApp }, use) => {
